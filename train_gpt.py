@@ -55,7 +55,7 @@ class Hyperparameters:
     warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1200))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
-    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
+    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024)) 
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
@@ -69,6 +69,7 @@ class Hyperparameters:
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
+    sliding_window = int(os.environ.get("SLIDING_WINDOW", 256))  # 256 tokens of context for the sliding window 
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -560,6 +561,7 @@ class CausalSelfAttention(nn.Module):
         num_kv_heads: int,
         rope_base: float,
         qk_gain_init: float,
+        sliding_window: int,
     ):
         super().__init__()
         if dim % num_heads != 0:
@@ -579,6 +581,9 @@ class CausalSelfAttention(nn.Module):
         self.proj._zero_init = True
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
+        self.sliding_window = sliding_window
+        self._mask_cache: dict[tuple[int, torch.device], Tensor] = {}
+
 
     def forward(self, x: Tensor) -> Tensor:
         bsz, seqlen, dim = x.shape
@@ -591,16 +596,31 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
-        y = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=None,
-            is_causal=True,
-            enable_gqa=(self.num_kv_heads != self.num_heads),
-        )
+        if self.sliding_window and 0 < self.sliding_window < seqlen:
+            mask = self._get_swa_mask(seqlen, x.device)
+            y = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=mask,
+                is_causal=False,
+                enable_gqa=(self.num_kv_heads != self.num_heads),
+            )
+        else:
+            y = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                is_causal=True,
+                enable_gqa=(self.num_kv_heads != self.num_heads),
+            )
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
+    
+    def _get_swa_mask(self, seqlen: int, device: torch.device) -> Tensor:
+        key = (seqlen, device)
+        if key not in self._mask_cache:
+            i = torch.arange(seqlen, device=device)
+            keep = (i[:, None] >= i[None, :]) & ((i[:, None] - i[None, :]) < self.sliding_window)
+            self._mask_cache[key] = keep
+        return self._mask_cache[key]
 
 
 class MLP(nn.Module):
@@ -626,11 +646,12 @@ class Block(nn.Module):
         mlp_mult: int,
         rope_base: float,
         qk_gain_init: float,
+        sliding_window: int,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, sliding_window)
         self.mlp = MLP(dim, mlp_mult)
         #self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         #self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
@@ -657,6 +678,7 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        sliding_window: int,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -678,6 +700,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
+                    sliding_window,
                 )
                 for i in range(num_layers)
             ]
@@ -833,6 +856,7 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        sliding_window=args.sliding_window,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
