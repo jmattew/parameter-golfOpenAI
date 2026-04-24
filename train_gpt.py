@@ -71,7 +71,8 @@ class Hyperparameters:
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
-    sliding_window = int(os.environ.get("SLIDING_WINDOW", 256))  # 256 tokens of context for the sliding window 
+    sliding_window = int(os.environ.get("SLIDING_WINDOW", 512))  # 512 tokens of context for the sliding window out of the normal 1024 token context length
+    global_layer_stride = int(os.environ.get("GLOBAL_LAYER_STRIDE", 3))
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -671,6 +672,7 @@ class GPT(nn.Module):
         rope_base: float,
         qk_gain_init: float,
         sliding_window: int,
+        global_layer_stride: int,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -692,7 +694,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    sliding_window,
+                    0 if (global_layer_stride > 0 and i % global_layer_stride == 0) else sliding_window,
                 )
                 for i in range(num_layers)
             ]
@@ -851,6 +853,7 @@ def main() -> None:
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
         sliding_window=args.sliding_window,
+        global_layer_stride=args.global_layer_stride,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -881,7 +884,7 @@ def main() -> None:
     # Pre-build sliding-window block masks and attach to each SWA attention module.
     if args.sliding_window and 0 < args.sliding_window < args.train_seq_len:
         W = args.sliding_window
-        seqlen = args.train_seq_len
+        seqlen = args.train_seq_len 
         def sliding_window_causal(b, h, q_idx, kv_idx):
             return (q_idx >= kv_idx) & (q_idx - kv_idx < W)
         bm = create_block_mask(
