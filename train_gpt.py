@@ -765,7 +765,7 @@ class GPT(nn.Module):
 # -----------------------------
 
 def main() -> None:
-    global zeropower_via_newtonschulz5
+    global zeropower_via_newtonschulz5, flex_attention
 
     flex_attention = torch.compile(flex_attention, dynamic=False)
 
