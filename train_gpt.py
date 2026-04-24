@@ -584,8 +584,7 @@ class CausalSelfAttention(nn.Module):
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
         self.sliding_window = sliding_window
-        self._mask_cache: dict[tuple[int, torch.device], Tensor] = {}
-        self._block_mask_cache: dict = {}
+        self.block_mask = None
 
 
     def forward(self, x: Tensor) -> Tensor:
@@ -600,10 +599,9 @@ class CausalSelfAttention(nn.Module):
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
         if self.sliding_window and 0 < self.sliding_window < seqlen:
-            block_mask = self._get_swa_block_mask(seqlen, x.device)
             y = flex_attention(
                 q, k, v,
-                block_mask=block_mask,
+                block_mask=self.block_mask,
                 enable_gqa=(self.num_kv_heads != self.num_heads),
             )
         else:
@@ -615,30 +613,6 @@ class CausalSelfAttention(nn.Module):
             )
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
-    
-    def _get_swa_mask(self, seqlen: int, device: torch.device) -> Tensor:
-        key = (seqlen, device)
-        if key not in self._mask_cache:
-            i = torch.arange(seqlen, device=device)
-            keep = (i[:, None] >= i[None, :]) & ((i[:, None] - i[None, :]) < self.sliding_window)
-            self._mask_cache[key] = keep
-        return self._mask_cache[key]
-    
-    @torch._dynamo.disable
-    def _get_swa_block_mask(self, seqlen: int, device: torch.device):
-        if seqlen not in self._block_mask_cache:
-            W = self.sliding_window
-            def sliding_window_causal(b, h, q_idx, kv_idx):
-                causal = q_idx >= kv_idx
-                window = q_idx - kv_idx < W
-                return causal & window
-            self._block_mask_cache[seqlen] = create_block_mask(
-                sliding_window_causal,
-                B=None, H=None,
-                Q_LEN=seqlen, KV_LEN=seqlen,
-                device=device,
-            )
-        return self._block_mask_cache[seqlen]
 
 
 class MLP(nn.Module):
@@ -904,6 +878,21 @@ def main() -> None:
     if base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
+    # Pre-build sliding-window block masks and attach to each SWA attention module.
+    if args.sliding_window and 0 < args.sliding_window < args.train_seq_len:
+        W = args.sliding_window
+        seqlen = args.train_seq_len
+        def sliding_window_causal(b, h, q_idx, kv_idx):
+            return (q_idx >= kv_idx) & (q_idx - kv_idx < W)
+        bm = create_block_mask(
+            sliding_window_causal,
+            B=None, H=None,
+            Q_LEN=seqlen, KV_LEN=seqlen,
+            device=device,
+        )
+        for m in base_model.modules():
+            if isinstance(m, CausalSelfAttention) and m.sliding_window > 0:
+                m.block_mask = bm
     optimizer_tok = torch.optim.Adam(
         [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}],
         betas=(args.beta1, args.beta2),
