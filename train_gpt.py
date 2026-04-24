@@ -25,6 +25,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # -----------------------------
@@ -597,17 +598,11 @@ class CausalSelfAttention(nn.Module):
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
         if self.sliding_window and 0 < self.sliding_window < seqlen:
-            mask = self._get_swa_mask(seqlen, x.device)
-            if self.num_kv_heads != self.num_heads:
-                n_rep = self.num_heads // self.num_kv_heads
-                k_exp = k.repeat_interleave(n_rep, dim=1)
-                v_exp = v.repeat_interleave(n_rep, dim=1)
-            else:
-                k_exp, v_exp = k, v
-            y = F.scaled_dot_product_attention(
-                q, k_exp, v_exp,
-                attn_mask=mask,
-                is_causal=False,
+            block_mask = self._get_swa_block_mask(seqlen, x.device)
+            y = flex_attention(
+                q, k, v,
+                block_mask=block_mask,
+                enable_gqa=(self.num_kv_heads != self.num_heads),
             )
         else:
             y = F.scaled_dot_product_attention(
@@ -626,6 +621,21 @@ class CausalSelfAttention(nn.Module):
             keep = (i[:, None] >= i[None, :]) & ((i[:, None] - i[None, :]) < self.sliding_window)
             self._mask_cache[key] = keep
         return self._mask_cache[key]
+    
+    def _get_swa_block_mask(self, seqlen: int, device: torch.device):
+        if seqlen not in self._block_mask_cache:
+            W = self.sliding_window
+            def sliding_window_causal(b, h, q_idx, kv_idx):
+                causal = q_idx >= kv_idx
+                window = q_idx - kv_idx < W
+                return causal & window
+            self._block_mask_cache[seqlen] = create_block_mask(
+                sliding_window_causal,
+                B=None, H=None,
+                Q_LEN=seqlen, KV_LEN=seqlen,
+                device=device,
+            )
+        return self._block_mask_cache[seqlen]
 
 
 class MLP(nn.Module):
@@ -756,6 +766,8 @@ class GPT(nn.Module):
 
 def main() -> None:
     global zeropower_via_newtonschulz5
+
+    flex_attention = torch.compile(flex_attention, dynamic=False)
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
@@ -922,7 +934,7 @@ def main() -> None:
     n_params = sum(p.numel() for p in base_model.parameters())
     log0(f"model_params:{n_params}")
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
-    log0("sdp_backends:cudnn=False flash=True mem_efficient=True math=False")
+    log0("sdp_backends:cudnn=False flash=True mem_efficient=True math=True")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
