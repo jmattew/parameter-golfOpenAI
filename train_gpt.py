@@ -27,6 +27,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch._dynamo
 
 # -----------------------------
 # HYPERPARAMETERS
@@ -584,6 +585,7 @@ class CausalSelfAttention(nn.Module):
         self.rotary = Rotary(self.head_dim, base=rope_base)
         self.sliding_window = sliding_window
         self._mask_cache: dict[tuple[int, torch.device], Tensor] = {}
+        self._block_mask_cache: dict = {}
 
 
     def forward(self, x: Tensor) -> Tensor:
@@ -622,6 +624,7 @@ class CausalSelfAttention(nn.Module):
             self._mask_cache[key] = keep
         return self._mask_cache[key]
     
+    @torch._dynamo.disable
     def _get_swa_block_mask(self, seqlen: int, device: torch.device):
         if seqlen not in self._block_mask_cache:
             W = self.sliding_window
