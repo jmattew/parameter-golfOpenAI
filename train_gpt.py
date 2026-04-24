@@ -598,11 +598,16 @@ class CausalSelfAttention(nn.Module):
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
         if self.sliding_window and 0 < self.sliding_window < seqlen:
             mask = self._get_swa_mask(seqlen, x.device)
+            if self.num_kv_heads != self.num_heads:
+                n_rep = self.num_heads // self.num_kv_heads
+                k_exp = k.repeat_interleave(n_rep, dim=1)
+                v_exp = v.repeat_interleave(n_rep, dim=1)
+            else:
+                k_exp, v_exp = k, v
             y = F.scaled_dot_product_attention(
-                q, k, v,
+                q, k_exp, v_exp,
                 attn_mask=mask,
                 is_causal=False,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
             )
         else:
             y = F.scaled_dot_product_attention(
@@ -787,7 +792,7 @@ def main() -> None:
     enable_cudnn_sdp(False)
     enable_flash_sdp(True)
     enable_mem_efficient_sdp(True)
-    enable_math_sdp(False)
+    enable_math_sdp(True)
 
     logfile = None
     if master_process:
