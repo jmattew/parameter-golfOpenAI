@@ -71,8 +71,8 @@ class Hyperparameters:
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
-    sliding_window = int(os.environ.get("SLIDING_WINDOW", 512))  # 512 tokens of context for the sliding window out of the normal 1024 token context length
-    global_layer_stride = int(os.environ.get("GLOBAL_LAYER_STRIDE", 3))
+    sliding_window = int(os.environ.get("SLIDING_WINDOW", 768))  # 512 tokens of context for the sliding window out of the normal 1024 token context length
+    global_layer_stride = int(os.environ.get("GLOBAL_LAYER_STRIDE", 2))
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
