@@ -77,10 +77,10 @@ class Hyperparameters:
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
-    tied_embed_lr = float(os.environ.get("TIED_EMBED_LR", 0.10))
+    tied_embed_lr = float(os.environ.get("TIED_EMBED_LR", 0.07))
     tied_embed_init_std = float(os.environ.get("TIED_EMBED_INIT_STD", 0.005))
-    matrix_lr = float(os.environ.get("MATRIX_LR", 0.04))
-    scalar_lr = float(os.environ.get("SCALAR_LR", 0.04))
+    matrix_lr = float(os.environ.get("MATRIX_LR", 0.06))
+    scalar_lr = float(os.environ.get("SCALAR_LR", 0.05))
     muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.95))
     muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
     muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.85))
@@ -1078,7 +1078,7 @@ def main() -> None:
         with torch.no_grad():
             for p in matrix_params:
                 p.mul_(1.0 - 0.02 * optimizer_muon.param_groups[0]["lr"])
-                
+
         zero_grad_all()
 
         step += 1
