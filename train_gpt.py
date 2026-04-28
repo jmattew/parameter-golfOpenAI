@@ -57,7 +57,7 @@ class Hyperparameters:
     warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 2500))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
-    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024)) 
+    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 2048)) 
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
@@ -71,7 +71,7 @@ class Hyperparameters:
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
-    sliding_window = int(os.environ.get("SLIDING_WINDOW", 768))  # 512 tokens of context for the sliding window out of the normal 1024 token context length
+    sliding_window = int(os.environ.get("SLIDING_WINDOW", 1024))  # 1024 tokens of context for the sliding window out of the normal 2048 token context length
     global_layer_stride = int(os.environ.get("GLOBAL_LAYER_STRIDE", 2))
 
     # Optimizer hyperparameters.
